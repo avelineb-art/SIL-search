@@ -1,0 +1,31 @@
+# Search phrase library used by the query generator.
+# Each category is independently configurable so new phrasing can be added
+# without touching code. Phrases use Google-style quoting; the query
+# generator combines each phrase with a location token (see locations.yml).
+
+service_synonyms:
+  - '"supported independent living" NDIS'
+  - '"supported independent living provider"'
+  - '"SIL provider" NDIS'
+  - '"home and living" NDIS provider'
+  - '"help to live independently" disability support'
+
+vacancy_terminology:
+  - '"SIL vacancies"'
+  - '"supported living vacancies" disability'
+
+accommodation_terminology:
+  - '"SIL accommodation"'
+  - '"supported accommodation" NDIS'
+  - '"shared living" disability support'
+  - '"shared home" NDIS'
+
+complex_support_terminology:
+  - '"24/7 support" disability home'
+  - '"24 hour support" disability accommodation'
+  - '"overnight support" shared home'
+  - '"active overnight support" disability'
+  - '"sleepover support" disability accommodation'
+  - '"assistance with daily living" shared home'
+  - '"high intensity support" SIL'
+  - '"complex care" supported living'

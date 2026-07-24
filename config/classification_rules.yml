@@ -1,0 +1,192 @@
+# Explainable, rule-based classification configuration.
+# Every rule here maps 1:1 to an EvidenceItem when matched - nothing in the
+# classifiers is hard-coded, so scores/phrases/thresholds can be tuned
+# without a code change.
+
+sil_classifier:
+  positive_evidence:
+    - id: exact_sil_phrase
+      phrase: "supported independent living"
+      points: 5
+      description: 'Exact phrase "supported independent living"'
+    - id: sil_acronym_near_context
+      phrase: "SIL"
+      requires_nearby_any: ["ndis", "disability", "support"]
+      nearby_window_chars: 120
+      points: 4
+      description: '"SIL" used near NDIS, disability or support terminology'
+    - id: sil_vacancy
+      any_phrase:
+        - "sil vacancy"
+        - "sil vacancies"
+        - "available sil home"
+        - "sil home available"
+      points: 5
+      description: "SIL vacancy or available SIL home"
+    - id: shared_home_rostered_support
+      any_phrase:
+        - "shared home with rostered support"
+        - "rostered support"
+      points: 3
+      description: "Shared home with rostered support"
+    - id: overnight_24_7_support
+      any_phrase:
+        - "24/7 support"
+        - "24-hour support"
+        - "24 hour support"
+      points: 3
+      description: "24/7 or 24-hour support in a residence"
+    - id: active_overnight_support
+      phrase: "active overnight support"
+      points: 2
+      description: "Active overnight support"
+    - id: sleepover_support
+      phrase: "sleepover support"
+      points: 2
+      description: "Sleepover support"
+    - id: assistance_daily_living_home
+      phrase: "assistance with daily living"
+      requires_nearby_any: ["home", "residence", "shared living"]
+      nearby_window_chars: 150
+      points: 2
+      description: "Assistance with daily living in the participant's home"
+    - id: supported_accommodation_personal_support
+      phrase: "supported accommodation"
+      requires_nearby_any: ["personal support", "personal care", "support worker"]
+      nearby_window_chars: 150
+      points: 3
+      description: "Supported accommodation with personal support"
+    - id: high_intensity_shared_home
+      phrase: "high intensity support"
+      requires_nearby_any: ["shared home", "sil", "supported independent living"]
+      nearby_window_chars: 200
+      points: 2
+      description: "High-intensity support within a shared home"
+    - id: complex_care_supported_living
+      phrase: "complex care"
+      requires_nearby_any: ["supported living", "sil", "shared home"]
+      nearby_window_chars: 200
+      points: 2
+      description: "Complex-care support within supported living"
+    - id: individualised_roster_of_care
+      phrase: "individualised roster of care"
+      points: 3
+      description: "Individualised roster of care"
+    - id: household_tasks_community_participation
+      any_phrase:
+        - "household tasks"
+        - "community participation"
+      requires_nearby_any: ["shared home", "shared living", "residence"]
+      nearby_window_chars: 200
+      points: 2
+      description: "Support with household tasks, routines and community participation in a shared residence"
+
+  negative_evidence:
+    - id: sda_only
+      any_phrase:
+        - "specialist disability accommodation"
+        - "sda"
+      exclusive_signal: true
+      points: -5
+      description: "Only provides SDA property or tenancy services"
+    - id: property_developer_only
+      any_phrase:
+        - "property developer"
+        - "real estate agent"
+        - "real estate agency"
+      exclusive_signal: true
+      points: -5
+      description: "Only acts as a property developer or real-estate agent"
+    - id: support_coordination_only
+      phrase: "support coordination"
+      exclusive_signal: true
+      points: -5
+      description: "Only provides support coordination"
+    - id: plan_management_only
+      phrase: "plan management"
+      exclusive_signal: true
+      points: -5
+      description: "Only provides plan management"
+    - id: allied_health_only
+      any_phrase:
+        - "allied health"
+        - "occupational therapy"
+        - "physiotherapy"
+        - "speech pathology"
+      exclusive_signal: true
+      points: -4
+      description: "Only provides allied health"
+    - id: respite_only
+      any_phrase:
+        - "short term accommodation"
+        - "short-term accommodation"
+        - "respite"
+      exclusive_signal: true
+      points: -3
+      description: "Only provides short-term accommodation or respite"
+    - id: day_program_only
+      any_phrase:
+        - "community access"
+        - "day program"
+      exclusive_signal: true
+      points: -3
+      description: "Only provides community access or day programs"
+    - id: employment_page_sil_no_service_page
+      page_type: "employment"
+      phrase: "sil"
+      points: -2
+      description: "Employment page mentioning SIL but no service page"
+    - id: blog_discussing_sil
+      page_type: "blog"
+      phrase: "supported independent living"
+      points: -4
+      description: "Blog discussing SIL without offering the service"
+
+  thresholds:
+    strong_sil_evidence: 8
+    likely_sil_provider: 5
+    possible_sil_provider: 3
+    # anything below possible_sil_provider is INSUFFICIENT_SIL_EVIDENCE
+
+registration_classifier:
+  explicit_registered_patterns:
+    - "registered ndis provider"
+    - "ndis registered provider"
+    - "registered provider with the ndis"
+    - "registered with the ndis commission"
+    - "registered with the ndis quality and safeguards commission"
+    - "approved ndis provider"
+    - "ndis provider registration"
+    - "ndis registration number"
+    - "provider registration number"
+    - "ndis registration group"
+    - "registration categories"
+    - "registered to provide ndis supports"
+
+  ambiguous_patterns:
+    - "ndis provider"
+    - "ndis services"
+    - "ndis participants"
+    - "ndis funded"
+    - "accepts ndis funding"
+    - "use your ndis plan"
+    - "supporting ndis participants"
+    - "ndis support services"
+    - "ndis approved"
+    - "working within the ndis"
+
+  explicit_unregistered_patterns:
+    - "unregistered ndis provider"
+    - "independent ndis provider"
+    - "we are not a registered ndis provider"
+    - "self-managed participants only"
+    - "plan-managed and self-managed participants"
+    - "we do not accept ndia-managed participants"
+    - "not registered with the ndis commission"
+
+fuzzy_matching:
+  # Used by register/matcher.py in Stage 3; kept here so all thresholds
+  # live in one configurable place.
+  strong_name_match_score: 92
+  probable_name_match_score: 85
+  possible_name_match_score: 75

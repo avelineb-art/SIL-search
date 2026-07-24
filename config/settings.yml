@@ -1,0 +1,87 @@
+# Non-secret defaults. Anything credential-shaped belongs in .env instead.
+# Values here can be overridden by environment variables of the same
+# purpose (see config.py) - this file supplies the defaults and the lists
+# that are impractical to express as a single env var.
+
+crawler:
+  priority_paths:
+    - "/"
+    - "about"
+    - "about-us"
+    - "services"
+    - "our-services"
+    - "ndis"
+    - "supported-independent-living"
+    - "supported-independent-living-sil"
+    - "sil"
+    - "sil-vacancies"
+    - "vacancies"
+    - "accommodation"
+    - "supported-accommodation"
+    - "disability-accommodation"
+    - "home-and-living"
+    - "independent-living"
+    - "shared-living"
+    - "complex-care"
+    - "high-intensity-support"
+    - "contact"
+    - "contact-us"
+    - "privacy"
+    - "privacy-policy"
+    - "complaints"
+    - "feedback"
+    - "terms"
+    - "resources"
+    - "downloads"
+    - "brochures"
+
+  link_keyword_triggers:
+    - "sil"
+    - "supported"
+    - "independent"
+    - "living"
+    - "accommodation"
+    - "vacancy"
+    - "vacancies"
+    - "home"
+    - "ndis"
+    - "registration"
+    - "registered"
+    - "provider"
+    - "complaints"
+    - "privacy"
+    - "service agreement"
+    - "brochure"
+
+  default_max_pages_per_domain: 25
+  default_concurrency: 4
+  default_delay_seconds: 2.0
+  default_timeout_seconds: 15
+  default_max_retries: 2
+
+discovery:
+  excluded_domain_suffixes:
+    - facebook.com
+    - instagram.com
+    - linkedin.com
+    - twitter.com
+    - x.com
+    - youtube.com
+    - tiktok.com
+  excluded_domain_keywords:
+    - wikipedia.org
+    - ndis.gov.au
+    - ndiscommission.gov.au
+    - servicesaustralia.gov.au
+  job_board_domains:
+    - seek.com.au
+    - indeed.com
+    - ethicaljobs.com.au
+  generic_directory_domains:
+    - yellowpages.com.au
+    - truelocal.com.au
+    - hotfrog.com.au
+    - whitepages.com.au
+
+export:
+  csv_delimiter_within_field: " | "

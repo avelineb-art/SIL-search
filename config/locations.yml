@@ -1,0 +1,85 @@
+# Location tokens combined with search_terms.yml phrases by the query
+# generator. `location_priority` controls the order in which locations are
+# consumed against the daily query budget - earlier entries are searched
+# first on every pass. Extend any list below without touching code.
+
+location_priority:
+  - New South Wales
+  - Victoria
+  - Queensland
+  - Western Australia
+  - South Australia
+  - Tasmania
+  - Australian Capital Territory
+  - Northern Territory
+
+national:
+  - Australia
+
+states_and_territories:
+  - New South Wales
+  - Victoria
+  - Queensland
+  - Western Australia
+  - South Australia
+  - Tasmania
+  - Australian Capital Territory
+  - Northern Territory
+
+metropolitan_areas:
+  - Sydney
+  - Melbourne
+  - Brisbane
+  - Perth
+  - Adelaide
+  - Hobart
+  - Canberra
+  - Darwin
+
+# Major regional cities and known disability-service markets, grouped by
+# state so coverage can be tuned per state independently.
+regional_centres:
+  New South Wales:
+    - Newcastle
+    - Wollongong
+    - Central Coast
+    - Coffs Harbour
+    - Tamworth
+    - Wagga Wagga
+    - Dubbo
+    - Orange
+    - Bathurst
+    - Albury
+  Victoria:
+    - Geelong
+    - Ballarat
+    - Bendigo
+    - Shepparton
+    - Mildura
+    - Warrnambool
+    - Traralgon
+  Queensland:
+    - Gold Coast
+    - Sunshine Coast
+    - Townsville
+    - Cairns
+    - Toowoomba
+    - Ipswich
+    - Rockhampton
+    - Mackay
+    - Bundaberg
+    - Gladstone
+  Western Australia:
+    - Bunbury
+    - Mandurah
+    - Geraldton
+    - Kalgoorlie
+  South Australia:
+    - Mount Gambier
+    - Whyalla
+  Tasmania:
+    - Launceston
+    - Devonport
+  Northern Territory:
+    - Alice Springs
+  Australian Capital Territory: []

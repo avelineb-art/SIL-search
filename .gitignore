@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Local environment / secrets
+.env
+
+# Local SQLite database and generated data
+data/processed/*.db
+data/exports/*
+data/raw/*
+data/register_snapshots/*
+!data/processed/.gitkeep
+!data/exports/.gitkeep
+!data/raw/.gitkeep
+!data/register_snapshots/.gitkeep
