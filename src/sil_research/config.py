@@ -79,6 +79,11 @@ def get_app_settings() -> dict[str, Any]:
     return _load_yaml("settings.yml")
 
 
+@lru_cache
+def get_register_columns() -> dict[str, Any]:
+    return _load_yaml("register_columns.yml")
+
+
 def resolve_data_path(relative: str) -> Path:
     """Resolve a path from settings/env relative to the project root."""
     path = Path(relative)

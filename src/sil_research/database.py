@@ -292,6 +292,33 @@ class ProviderRegisterSnapshot(Base):
     column_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class RegisterEntry(Base):
+    """One row from an imported register snapshot.
+
+    Not part of the original Stage 1 table sketch (which only named the
+    snapshot-metadata and match-result tables) - added because the matcher
+    needs something queryable to match providers against. Kept
+    intentionally denormalised (plus a `raw_row` escape hatch) since the
+    real file's exact columns haven't been confirmed yet; see
+    config/register_columns.yml.
+    """
+
+    __tablename__ = "register_entries"
+
+    entry_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("provider_register_snapshots.snapshot_id"), index=True)
+    abn: Mapped[str | None] = mapped_column(String(11), index=True)
+    entity_name: Mapped[str | None] = mapped_column(String(512))
+    normalised_entity_name: Mapped[str | None] = mapped_column(String(512), index=True)
+    trading_name: Mapped[str | None] = mapped_column(String(512))
+    normalised_trading_name: Mapped[str | None] = mapped_column(String(512), index=True)
+    registration_status: Mapped[str | None] = mapped_column(String(64))
+    registration_groups: Mapped[list] = mapped_column(JSON, default=list)
+    registration_expiry: Mapped[datetime | None] = mapped_column(DateTime)
+    state: Mapped[str | None] = mapped_column(String(64))
+    raw_row: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class ProviderRegisterMatch(Base):
     __tablename__ = "provider_register_matches"
 
@@ -299,7 +326,7 @@ class ProviderRegisterMatch(Base):
     provider_id: Mapped[str] = mapped_column(ForeignKey("providers.provider_id"))
     snapshot_id: Mapped[int] = mapped_column(ForeignKey("provider_register_snapshots.snapshot_id"))
     method: Mapped[str] = mapped_column(String(64))
-    confidence: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float | None] = mapped_column(Float)
     register_entity_name: Mapped[str | None] = mapped_column(String(255))
     register_abn: Mapped[str | None] = mapped_column(String(11))
     registration_status: Mapped[str | None] = mapped_column(String(64))

@@ -3,9 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from sil_research.classification.scoring import TextSource, classify_page_type
 from sil_research.crawling.page_parser import parse_page
+from sil_research.database import Base
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -34,3 +37,19 @@ def text_source_from_fixture(name: str, url: str, base_domain: str = "example.co
 @pytest.fixture
 def fixtures_dir() -> Path:
     return FIXTURES_DIR
+
+
+@pytest.fixture
+def db_session():
+    """A fresh, isolated in-memory SQLite session with the full schema
+    created - independent of the module-level engine in database.py, so
+    tests never touch a real data file and never interfere with each other.
+    """
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = Session(engine)
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()

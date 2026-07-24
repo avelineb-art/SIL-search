@@ -1,0 +1,56 @@
+# Column-name aliases for importing the official NDIS Provider Register
+# downloadable export (config: register/importer.py).
+#
+# IMPORTANT - these alias lists are a best-effort guess at plausible header
+# names for the register's "Active providers" export. The actual column
+# headers have not been confirmed against a real downloaded file (the
+# register's download page returns HTTP 403 to automated fetching, so a
+# human needs to check the real file once available). This is exactly why
+# the importer resolves columns by name against this list rather than by
+# position: if the real header text differs, add it to the relevant list
+# below and nothing else needs to change. If none of a required field's
+# aliases match, the importer fails loudly and prints the file's actual
+# headers rather than silently mis-mapping a column.
+
+abn:
+  - "ABN"
+  - "Provider ABN"
+  - "Australian Business Number"
+
+entity_name:
+  - "Legal Name"
+  - "Provider Legal Name"
+  - "Registered Name"
+  - "Entity Name"
+  - "Organisation Name"
+
+trading_name:
+  - "Trading Name"
+  - "Provider Trading Name"
+  - "Provider Business Name"
+  - "Business Name"
+
+registration_status:
+  - "Registration Status"
+  - "Registration Current Status"
+  - "Provider Status"
+  - "Status"
+
+registration_groups:
+  - "Registration Groups"
+  - "Registration Group"
+  - "Support Categories"
+  - "Classes of Support"
+  - "Registration Categories"
+
+registration_expiry:
+  - "Registration Expiry"
+  - "Registration Expiry Date"
+  - "Expiry Date"
+  - "Registration End Date"
+
+state:
+  - "State"
+  - "Provider State"
+  - "Registered State"
+  - "State/Territory"

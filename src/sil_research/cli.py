@@ -30,6 +30,9 @@ from sil_research.database import (
     Page,
     PageText,
     Provider,
+    ProviderRegisterMatch,
+    ProviderRegisterSnapshot,
+    RegisterEntry,
     RegistrationEvidence,
     SearchQuery,
     SearchResult,
@@ -45,11 +48,15 @@ from sil_research.discovery.search_provider import GoogleCSEProvider, MockSearch
 from sil_research.export.csv_export import export_evidence_csv, export_providers_csv
 from sil_research.export.json_export import export_providers_json
 from sil_research.extraction.abn import find_abns
+from sil_research.extraction.abn_lookup import AbnLookupError, AbrJsonAbnLookupClient, CachingAbnLookupClient
 from sil_research.extraction.contact import extract_general_email, extract_phone_numbers
 from sil_research.extraction.locations import extract_service_locations, extract_states
 from sil_research.extraction.organisation import find_copyright_name, find_legal_name_candidates, normalise_name
 from sil_research.logging_config import configure_logging
 from sil_research.models import EvidenceItem, ProviderRecord
+from sil_research.register.base import RegisterEntryData, RegisterImportError
+from sil_research.register.importer import import_register_file
+from sil_research.register.matcher import match_provider
 from sil_research.review.workflow import compute_automated_segment
 
 app = typer.Typer(help="Compliant SIL provider lead-research CLI", add_completion=False)
@@ -613,6 +620,150 @@ def review_summary() -> None:
         typer.echo(f"Total providers: {len(providers)}")
         for segment, count in sorted(counts.items(), key=lambda kv: -kv[1]):
             typer.echo(f"  {segment}: {count}")
+
+
+@app.command(name="import-register")
+def import_register(
+    file: str = typer.Option(..., "--file", help="Path to the manually downloaded register export (CSV or Excel)."),
+    snapshot_date: str = typer.Option(..., "--snapshot-date", help="Date the file was downloaded, YYYY-MM-DD."),
+) -> None:
+    """Import a downloaded NDIS Provider Register export as a new versioned snapshot."""
+    configure_logging()
+    init_db()
+
+    try:
+        parsed_date = datetime.strptime(snapshot_date, "%Y-%m-%d").date()
+    except ValueError:
+        typer.echo("--snapshot-date must be in YYYY-MM-DD format, e.g. 2026-07-25")
+        raise typer.Exit(1)
+
+    try:
+        with session_scope() as session:
+            result = import_register_file(file, parsed_date, session)
+    except RegisterImportError as exc:
+        typer.echo(f"Register import failed: {exc}")
+        with session_scope() as session:
+            session.add(ErrorRecord(stage="register_import", error_type="RegisterImportError", message=str(exc), context={"file": file}))
+        raise typer.Exit(1)
+
+    typer.echo(f"Imported snapshot {result.snapshot_id}: {result.imported} entries from {result.row_count} rows ({result.skipped} skipped).")
+    typer.echo(f"Column mapping used: {result.column_mapping}")
+    for warning in result.warnings:
+        typer.echo(f"  warning: {warning}")
+
+
+@app.command(name="match-register")
+def match_register(
+    pending: bool = typer.Option(False, "--pending", help="Only match providers not yet checked against any snapshot."),
+) -> None:
+    """Match crawled providers against the most recently imported register snapshot."""
+    configure_logging()
+    init_db()
+
+    with session_scope() as session:
+        latest_snapshot = session.execute(
+            select(ProviderRegisterSnapshot).order_by(ProviderRegisterSnapshot.snapshot_id.desc())
+        ).scalars().first()
+        if latest_snapshot is None:
+            typer.echo("No register snapshot has been imported yet - run `import-register` first.")
+            raise typer.Exit(1)
+
+        entry_rows = list(session.execute(select(RegisterEntry).where(RegisterEntry.snapshot_id == latest_snapshot.snapshot_id)).scalars())
+        entries = [
+            RegisterEntryData(
+                entry_id=e.entry_id,
+                abn=e.abn,
+                entity_name=e.entity_name,
+                trading_name=e.trading_name,
+                registration_status=e.registration_status,
+                registration_groups=e.registration_groups,
+                registration_expiry=e.registration_expiry,
+                state=e.state,
+            )
+            for e in entry_rows
+        ]
+
+        stmt = select(Provider)
+        if pending:
+            stmt = stmt.where(Provider.register_match_status == "REGISTER_NOT_CHECKED")
+        providers = list(session.execute(stmt).scalars())
+        typer.echo(f"Matching {len(providers)} provider(s) against snapshot {latest_snapshot.snapshot_id} ({len(entries)} register entries)...")
+
+        for provider_row in providers:
+            result = match_provider(
+                provider_abn=provider_row.abn,
+                provider_abn_confirmed=bool(provider_row.abn_lookup_confirmed),
+                provider_legal_name=provider_row.legal_name,
+                provider_trading_name=provider_row.trading_name,
+                provider_states=list(provider_row.states or []),
+                entries=entries,
+            )
+
+            provider_row.register_match_status = result.status
+            provider_row.register_match_confidence = result.confidence
+            provider_row.last_register_check = datetime.utcnow()
+            provider_row.register_snapshot_date = latest_snapshot.download_date
+            provider_row.register_entity_name = result.matched_entry.entity_name if result.matched_entry else None
+            provider_row.register_abn = result.matched_entry.abn if result.matched_entry else None
+            provider_row.register_registration_status = result.matched_entry.registration_status if result.matched_entry else None
+
+            session.add(
+                ProviderRegisterMatch(
+                    provider_id=provider_row.provider_id,
+                    snapshot_id=latest_snapshot.snapshot_id,
+                    method=result.method,
+                    confidence=result.confidence,
+                    register_entity_name=result.matched_entry.entity_name if result.matched_entry else None,
+                    register_abn=result.matched_entry.abn if result.matched_entry else None,
+                    registration_status=result.matched_entry.registration_status if result.matched_entry else None,
+                    registration_groups=result.matched_entry.registration_groups if result.matched_entry else [],
+                    registration_expiry=result.matched_entry.registration_expiry if result.matched_entry else None,
+                )
+            )
+
+            record = _to_provider_record(provider_row)
+            provider_row.automated_segment = compute_automated_segment(record)
+
+        typer.echo("Register matching complete.")
+
+
+@app.command(name="abn-verify")
+def abn_verify(
+    pending: bool = typer.Option(False, "--pending", help="Only verify providers whose ABN hasn't been checked yet."),
+) -> None:
+    """Confirm extracted ABNs and resolve legal names via the ABN Lookup service."""
+    configure_logging()
+    init_db()
+    settings = get_settings()
+
+    if not settings.abn_lookup_guid:
+        typer.echo("ABN_LOOKUP_GUID is not set - register at https://abr.business.gov.au/Tools/WebServices and set it in .env.")
+        raise typer.Exit(1)
+
+    client = CachingAbnLookupClient(AbrJsonAbnLookupClient(guid=settings.abn_lookup_guid))
+
+    with session_scope() as session:
+        stmt = select(Provider).where(Provider.abn.is_not(None))
+        if pending:
+            stmt = stmt.where(Provider.abn_lookup_confirmed.is_(None))
+        providers = list(session.execute(stmt).scalars())
+        typer.echo(f"Verifying {len(providers)} provider(s) against ABN Lookup...")
+
+        for provider_row in providers:
+            try:
+                result = client.lookup_abn(provider_row.abn)
+            except AbnLookupError as exc:
+                session.add(
+                    ErrorRecord(provider_id=provider_row.provider_id, stage="abn_verify", error_type="AbnLookupError", message=str(exc))
+                )
+                continue
+
+            provider_row.abn_lookup_confirmed = result.found
+            if result.found and result.entity_name and not result.is_suppressed:
+                provider_row.legal_name = result.entity_name
+                provider_row.normalised_legal_name = normalise_name(result.entity_name)
+
+        typer.echo("ABN verification complete.")
 
 
 if __name__ == "__main__":
