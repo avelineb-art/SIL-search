@@ -27,6 +27,10 @@ dev = [
     "pytest-cov>=5.0",
     "respx>=0.21",
 ]
+dashboard = [
+    "streamlit>=1.35",
+    "pandas>=2.2",
+]
 
 [project.scripts]
 sil-research = "sil_research.cli:app"
@@ -40,4 +44,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]

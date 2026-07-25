@@ -114,13 +114,23 @@ class Domain(Base):
 
 
 class Page(Base):
+    """One page fetch. Deliberately NOT unique on (provider_id,
+    canonical_url): a URL is re-fetched fresh on every crawl/recrawl and
+    each fetch is kept as its own row (tagged with `crawl_run_id`) so crawl
+    history accumulates and changes between crawl dates can be compared,
+    per the build spec. Within a single crawl run, the crawler itself
+    (crawling/crawler.py) already dedupes URL variants against its own
+    canonical-URL visited-set, so this table never gets duplicate rows for
+    the same fetch - only one row per page per run.
+    """
+
     __tablename__ = "pages"
-    __table_args__ = (UniqueConstraint("provider_id", "canonical_url", name="uq_page_provider_canonical_url"),)
 
     page_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.provider_id"))
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.provider_id"), index=True)
+    crawl_run_id: Mapped[int | None] = mapped_column(ForeignKey("crawl_runs.run_id"), index=True)
     url: Mapped[str] = mapped_column(String(2048))
-    canonical_url: Mapped[str] = mapped_column(String(2048))
+    canonical_url: Mapped[str] = mapped_column(String(2048), index=True)
     http_status: Mapped[int | None] = mapped_column(Integer)
     page_title: Mapped[str | None] = mapped_column(String(512))
     meta_description: Mapped[str | None] = mapped_column(Text)
@@ -147,10 +157,14 @@ class PageText(Base):
 
 
 class Document(Base):
+    """One PDF fetch, tagged by crawl run for the same reason as `Page` -
+    see its docstring."""
+
     __tablename__ = "documents"
 
     document_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.provider_id"))
+    provider_id: Mapped[str] = mapped_column(ForeignKey("providers.provider_id"), index=True)
+    crawl_run_id: Mapped[int | None] = mapped_column(ForeignKey("crawl_runs.run_id"), index=True)
     source_url: Mapped[str] = mapped_column(String(2048))
     doc_type: Mapped[str | None] = mapped_column(String(64))
     extraction_status: Mapped[str] = mapped_column(String(32), default="PENDING")

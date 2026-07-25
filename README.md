@@ -1,4 +1,4 @@
-# SIL Provider Research (Stage 3: register matching and identity verification)
+# SIL Provider Research (Stage 4: review dashboard)
 
 A compliant lead-research tool that identifies Australian organisations with strong public
 evidence of delivering Supported Independent Living (SIL) whose website does not clearly state
@@ -46,16 +46,36 @@ rationale, database schema, and open questions. This README covers what's implem
   guessing.
 - Segmentation and the CSV/JSON export now reflect real register-match fields once matching has
   run.
-- SQLite storage (portable to PostgreSQL via `SIL_DATABASE_URL`).
+- SQLite storage (portable to PostgreSQL via `SIL_DATABASE_URL`). Crawl history is retained across
+  recrawls (each fetch is its own row tagged by crawl run) so changes over time can be compared -
+  classification always scores only the most recent crawl.
+
+**Stage 4 - review dashboard (this update):**
+
+- A Streamlit dashboard (`dashboard/app.py`) with a filterable provider table (state, SIL score,
+  SIL classification, registration-claim status, register-match status, automated segment,
+  keyword search) and a per-provider detail view split into the five sections the build spec
+  calls for: SIL evidence, registration statements, official register match, automated
+  interpretation, and the human-review decision.
+- From the detail view: record a manual-review decision with reviewer name and notes, recrawl the
+  provider, re-run classification without recrawling, one-click "mark false positive", and compare
+  a page's visible text between any two crawl dates (unified diff).
+- CSV export from the dashboard, either a quick download of the current filtered view or the full
+  provider+evidence export (same code path as the CLI's `export` command).
+- All querying/mutation logic lives in `dashboard/data.py`, which has no Streamlit dependency and
+  is unit-tested; `dashboard/app.py` is thin rendering on top of it.
 
 ## Setup
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,dashboard]"
 cp .env.example .env   # then fill in any credentials you have
 ```
+
+(Drop `dashboard` from the extras if you only need the CLI/pipeline - it pulls in Streamlit and
+pandas, which nothing outside `dashboard/` depends on.)
 
 No credentials are required to run discovery/crawl/classify end-to-end: with
 `SIL_SEARCH_PROVIDER=mock` (the default), discovery runs against an in-memory
@@ -103,11 +123,26 @@ python -m sil_research match-register --pending
 python -m sil_research export --format csv
 python -m sil_research export --format json
 
-# Provider counts by automated segment - the input to the go/no-go decision on Stage 4/5.
+# Provider counts by automated segment - the input to the go/no-go decision on Stage 5.
 python -m sil_research review-summary
 ```
 
 Every command also works via the installed console script: `sil-research discover ...`.
+
+## Running the dashboard
+
+```bash
+pip install -e ".[dashboard]"   # if you skipped it during setup
+streamlit run dashboard/app.py
+```
+
+Opens on `http://localhost:8501` by default. It reads/writes the same database as the CLI
+(`SIL_DATABASE_URL`) - run discovery/crawl/classify/register-matching via the CLI first so there's
+something to review. Note that SQLite doesn't handle sustained concurrent access from two separate
+processes well in some environments; if you hit an "unable to open database file" error while
+running a CLI command with the dashboard open at the same time, stop the dashboard, run the CLI
+command, then restart it (this is a SQLite/filesystem limitation, not specific to this tool - it's
+one of the reasons Stage 1 scoped Postgres as the production database).
 
 ## Downloading and importing a register snapshot
 
@@ -137,7 +172,9 @@ python -m pytest
 
 Tests run entirely offline: classifier/extraction tests use synthetic HTML fixtures under
 `tests/fixtures/`, the crawler and ABN Lookup client tests mock HTTP with `respx`, and the register
-importer/matcher tests use an in-memory SQLite database - nothing hits the network or a real file.
+importer/matcher/dashboard-data tests use an in-memory SQLite database - nothing hits the network
+or a real file. The dashboard's rendering (`dashboard/app.py`) isn't unit-tested (Streamlit UI code
+generally isn't) but was verified with a headless Playwright smoke test against real crawled data.
 
 ## Adding another search provider
 
@@ -169,6 +206,11 @@ the `SearchProvider` interface.
 - Every automated output - SIL classification, registration-claim status, register-match status,
   and segment - is designed for manual review, not for any business or compliance decision on its
   own.
+- The dashboard's recrawl/reclassify actions run synchronously in the Streamlit process (no
+  background job queue) - recrawling a provider blocks the UI for as long as the crawl takes.
+  Acceptable for an internal single-reviewer tool; revisit if Stage 5 adds scheduling.
+- SQLite doesn't reliably support two processes (e.g. the dashboard and a CLI command) writing at
+  the same moment in every environment - see "Running the dashboard" above.
 
 ## Sample output record (CSV)
 
@@ -212,5 +254,9 @@ sunriseliving.com.au,sunriseliving.com.au,SIL,exact_sil_phrase,5,Supported Indep
 No live discovery/crawl run has been executed yet - `SIL_SEARCH_PROVIDER` defaults to the offline
 mock and no Google CSE credentials have been supplied in this environment, and no real NDIS
 Provider Register file has been downloaded and imported. `review-summary` will report real segment
-counts once discovery and matching have been run against live data; there is currently no cohort
-to report, so the go/no-go decision on Stage 4/5 is still pending an actual run.
+counts once discovery and matching have been run against live data.
+
+The build spec originally conditioned the dashboard (Stage 4) on reviewing the Stage 3 cohort size
+first. That review hasn't happened - there's still no real cohort - but Stage 4 was built anyway on
+explicit approval to proceed. Stage 5 (PostgreSQL, scheduling, incremental recrawling, improved
+entity resolution, deployment docs) remains gated on an actual go-ahead, same as before.

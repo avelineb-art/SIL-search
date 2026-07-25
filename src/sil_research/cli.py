@@ -116,6 +116,12 @@ def _to_provider_record(
     )
 
 
+def _latest_crawl_run_id(session, provider_id: str) -> int | None:
+    return session.execute(
+        select(CrawlRun.run_id).where(CrawlRun.provider_id == provider_id).order_by(CrawlRun.run_id.desc()).limit(1)
+    ).scalar_one_or_none()
+
+
 def _update_identity_fields(provider_row: Provider, outcome: CrawlOutcome) -> None:
     """Best-effort organisation-identity extraction from everything crawled
     for this provider in this run. Values are overwritten on each crawl so
@@ -309,12 +315,14 @@ def _run_crawl(session, providers: list[Provider], concurrency: int, settings) -
         provider_row = website_urls[website_url]
         run = CrawlRun(provider_id=provider_row.provider_id, started_at=datetime.utcnow())
         session.add(run)
+        session.flush()  # assigns run.run_id, needed as a FK on each Page row below
 
         for crawled_page in outcome.pages:
             page_title = crawled_page.parsed.title if crawled_page.parsed else None
             page_type = classify_page_type(crawled_page.url, page_title)
             page_row = Page(
                 provider_id=provider_row.provider_id,
+                crawl_run_id=run.run_id,
                 url=crawled_page.url,
                 canonical_url=crawled_page.canonical_url,
                 http_status=crawled_page.http_status,
@@ -351,6 +359,7 @@ def _run_crawl(session, providers: list[Provider], concurrency: int, settings) -
             failed = bool(doc.error) or bool(doc.parsed and doc.parsed.extraction_failed)
             doc_row = Document(
                 provider_id=provider_row.provider_id,
+                crawl_run_id=run.run_id,
                 source_url=doc.source_url,
                 doc_type=doc.parsed.doc_type if doc.parsed else None,
                 extraction_status="FAILED" if failed else "OK",
@@ -431,6 +440,116 @@ def recrawl(domain: str = typer.Option(..., "--domain", help="Domain to recrawl.
         typer.echo(f"Recrawled {domain}.")
 
 
+def _classify_provider(session, provider_row: Provider) -> None:
+    """Run both classifiers for one provider against its most recent crawl
+    run only. Pages/documents are kept across crawl runs for history/diffing
+    (see Page's docstring in database.py), so without this scoping a stale
+    prior snapshot would keep contributing to the score forever.
+
+    Shared by the `classify` command and the dashboard's "re-run
+    classification" action so both go through identical logic.
+    """
+    latest_run_id = _latest_crawl_run_id(session, provider_row.provider_id)
+    page_stmt = select(Page).where(Page.provider_id == provider_row.provider_id)
+    doc_stmt = select(Document).where(Document.provider_id == provider_row.provider_id)
+    if latest_run_id is not None:
+        page_stmt = page_stmt.where(Page.crawl_run_id == latest_run_id)
+        doc_stmt = doc_stmt.where(Document.crawl_run_id == latest_run_id)
+    pages = list(session.execute(page_stmt).scalars())
+    documents = list(session.execute(doc_stmt).scalars())
+
+    sources: list[TextSource] = []
+    for page in pages:
+        page_type = page.page_type or classify_page_type(page.url, page.page_title)
+        if page.text and page.text.visible_text:
+            sources.append(
+                TextSource(text=page.text.visible_text, source_url=page.url, origin="VISIBLE_TEXT", page_title=page.page_title, page_type=page_type)
+            )
+        if page.meta_description:
+            sources.append(
+                TextSource(text=page.meta_description, source_url=page.url, origin="METADATA", page_title=page.page_title, page_type=page_type)
+            )
+        if page.text and page.text.footer_text:
+            sources.append(
+                TextSource(text=page.text.footer_text, source_url=page.url, origin="VISIBLE_TEXT", page_title=page.page_title, page_type=page_type)
+            )
+        if page.text and page.text.structured_data:
+            sources.append(
+                TextSource(
+                    text=json.dumps(page.text.structured_data),
+                    source_url=page.url,
+                    origin="STRUCTURED_DATA",
+                    page_title=page.page_title,
+                    page_type=page_type,
+                )
+            )
+    for doc in documents:
+        if doc.extraction_status == "OK" and doc.extracted_text:
+            sources.append(TextSource(text=doc.extracted_text, source_url=doc.source_url, origin="PDF_TEXT", page_type="general"))
+
+    sil_result = classify_sil(sources, provider_domain=provider_row.domain)
+    registration_result = classify_registration(sources, provider_domain=provider_row.domain)
+
+    provider_row.sil_score = sil_result.score
+    provider_row.sil_classification = sil_result.classification
+    provider_row.sil_confidence = sil_result.confidence
+    provider_row.registration_claim_status = registration_result.status
+    provider_row.registration_claim_confidence = registration_result.confidence
+
+    existing_sil_hashes = {
+        row[0]
+        for row in session.execute(select(SilEvidence.evidence_hash).where(SilEvidence.provider_id == provider_row.provider_id)).all()
+    }
+    for item in sil_result.evidence:
+        h = evidence_hash(provider_row.domain, item.evidence_type, item.matched_text, item.source_url)
+        if h in existing_sil_hashes:
+            continue
+        existing_sil_hashes.add(h)
+        session.add(
+            SilEvidence(
+                provider_id=provider_row.provider_id,
+                evidence_category=item.evidence_type,
+                matched_text=item.matched_text,
+                context_excerpt=item.context_excerpt,
+                score_contribution=item.score_contribution,
+                origin=item.origin,
+                source_url=item.source_url,
+                page_title=item.page_title,
+                document_page=item.document_page,
+                evidence_hash=h,
+            )
+        )
+
+    existing_reg_hashes = {
+        row[0]
+        for row in session.execute(
+            select(RegistrationEvidence.evidence_hash).where(RegistrationEvidence.provider_id == provider_row.provider_id)
+        ).all()
+    }
+    for item in registration_result.evidence:
+        h = evidence_hash(provider_row.domain, item.evidence_type, item.matched_text, item.source_url)
+        if h in existing_reg_hashes:
+            continue
+        existing_reg_hashes.add(h)
+        session.add(
+            RegistrationEvidence(
+                provider_id=provider_row.provider_id,
+                claim_status=item.evidence_type,
+                matched_text=item.matched_text,
+                context_excerpt=item.context_excerpt,
+                origin=item.origin,
+                source_url=item.source_url,
+                page_title=item.page_title,
+                document_page=item.document_page,
+                evidence_hash=h,
+            )
+        )
+
+    record = _to_provider_record(provider_row, sil_result.evidence, registration_result.evidence)
+    provider_row.automated_segment = compute_automated_segment(record)
+    provider_row.crawl_status = "CLASSIFIED"
+
+
 @app.command()
 def classify(pending: bool = typer.Option(False, "--pending", help="Only classify providers not yet classified.")) -> None:
     """Run the SIL and registration-language classifiers over crawled content."""
@@ -443,99 +562,7 @@ def classify(pending: bool = typer.Option(False, "--pending", help="Only classif
         typer.echo(f"Classifying {len(providers)} provider(s)...")
 
         for provider_row in providers:
-            pages = list(session.execute(select(Page).where(Page.provider_id == provider_row.provider_id)).scalars())
-            documents = list(session.execute(select(Document).where(Document.provider_id == provider_row.provider_id)).scalars())
-
-            sources: list[TextSource] = []
-            for page in pages:
-                page_type = page.page_type or classify_page_type(page.url, page.page_title)
-                if page.text and page.text.visible_text:
-                    sources.append(
-                        TextSource(text=page.text.visible_text, source_url=page.url, origin="VISIBLE_TEXT", page_title=page.page_title, page_type=page_type)
-                    )
-                if page.meta_description:
-                    sources.append(
-                        TextSource(text=page.meta_description, source_url=page.url, origin="METADATA", page_title=page.page_title, page_type=page_type)
-                    )
-                if page.text and page.text.footer_text:
-                    sources.append(
-                        TextSource(text=page.text.footer_text, source_url=page.url, origin="VISIBLE_TEXT", page_title=page.page_title, page_type=page_type)
-                    )
-                if page.text and page.text.structured_data:
-                    sources.append(
-                        TextSource(
-                            text=json.dumps(page.text.structured_data),
-                            source_url=page.url,
-                            origin="STRUCTURED_DATA",
-                            page_title=page.page_title,
-                            page_type=page_type,
-                        )
-                    )
-            for doc in documents:
-                if doc.extraction_status == "OK" and doc.extracted_text:
-                    sources.append(TextSource(text=doc.extracted_text, source_url=doc.source_url, origin="PDF_TEXT", page_type="general"))
-
-            sil_result = classify_sil(sources, provider_domain=provider_row.domain)
-            registration_result = classify_registration(sources, provider_domain=provider_row.domain)
-
-            provider_row.sil_score = sil_result.score
-            provider_row.sil_classification = sil_result.classification
-            provider_row.sil_confidence = sil_result.confidence
-            provider_row.registration_claim_status = registration_result.status
-            provider_row.registration_claim_confidence = registration_result.confidence
-
-            existing_sil_hashes = {
-                row[0]
-                for row in session.execute(select(SilEvidence.evidence_hash).where(SilEvidence.provider_id == provider_row.provider_id)).all()
-            }
-            for item in sil_result.evidence:
-                h = evidence_hash(provider_row.domain, item.evidence_type, item.matched_text, item.source_url)
-                if h in existing_sil_hashes:
-                    continue
-                existing_sil_hashes.add(h)
-                session.add(
-                    SilEvidence(
-                        provider_id=provider_row.provider_id,
-                        evidence_category=item.evidence_type,
-                        matched_text=item.matched_text,
-                        context_excerpt=item.context_excerpt,
-                        score_contribution=item.score_contribution,
-                        origin=item.origin,
-                        source_url=item.source_url,
-                        page_title=item.page_title,
-                        document_page=item.document_page,
-                        evidence_hash=h,
-                    )
-                )
-
-            existing_reg_hashes = {
-                row[0]
-                for row in session.execute(
-                    select(RegistrationEvidence.evidence_hash).where(RegistrationEvidence.provider_id == provider_row.provider_id)
-                ).all()
-            }
-            for item in registration_result.evidence:
-                h = evidence_hash(provider_row.domain, item.evidence_type, item.matched_text, item.source_url)
-                if h in existing_reg_hashes:
-                    continue
-                existing_reg_hashes.add(h)
-                session.add(
-                    RegistrationEvidence(
-                        provider_id=provider_row.provider_id,
-                        claim_status=item.evidence_type,
-                        matched_text=item.matched_text,
-                        context_excerpt=item.context_excerpt,
-                        origin=item.origin,
-                        source_url=item.source_url,
-                        page_title=item.page_title,
-                        document_page=item.document_page,
-                        evidence_hash=h,
-                    )
-                )
-
-            record = _to_provider_record(provider_row, sil_result.evidence, registration_result.evidence)
-            provider_row.automated_segment = compute_automated_segment(record)
-            provider_row.crawl_status = "CLASSIFIED"
+            _classify_provider(session, provider_row)
 
         typer.echo("Classification complete.")
 
