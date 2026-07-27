@@ -14,8 +14,8 @@ rationale, database schema, and open questions. This README covers what's implem
 **Stage 2 - discovery, crawling, classification:**
 
 - A modular `SearchProvider` interface with a `MockSearchProvider` (offline/testing),
-  `SerpApiProvider` (recommended - see below), and `GoogleCSEProvider` (Google Programmable
-  Search, still supported).
+  `BraveSearchProvider` (currently in use - see below), `SerpApiProvider`, and `GoogleCSEProvider`
+  (Google Programmable Search) - the latter two remain fully supported, just not the active choice.
 - A query generator combining configurable phrase and location lists, with a daily query budget,
   a freshness window, and a location-priority order (NSW/VIC/QLD first by default).
 - Canonical-domain deduplication and discovery-result exclusion (social media, PDF-only results,
@@ -90,11 +90,11 @@ See `.env.example` for the full list with defaults. The ones you're most likely 
 | Variable | Purpose |
 |---|---|
 | `SIL_DATABASE_URL` | SQLAlchemy DSN. Defaults to a local SQLite file. |
-| `SIL_SEARCH_PROVIDER` | `mock` (default), `serpapi` (recommended), or `google_cse`. |
-| `SERPAPI_API_KEY` | Required when `SIL_SEARCH_PROVIDER=serpapi`. Register at https://serpapi.com. |
-| `SERPAPI_GOOGLE_DOMAIN`, `SERPAPI_COUNTRY`, `SERPAPI_LANGUAGE` | Default to `google.com.au` / `au` / `en` - bias results to Australia regardless of query text. |
-| `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | Required only when `SIL_SEARCH_PROVIDER=google_cse` (still supported, no longer the default recommendation). |
-| `SIL_DAILY_QUERY_BUDGET` | Caps queries per `discover` run. SerpApi's free tier is 100/**month**; Google CSE's is 100/day - set to match whichever you're on. |
+| `SIL_SEARCH_PROVIDER` | `mock` (default), `brave` (currently in use), `serpapi`, or `google_cse`. |
+| `BRAVE_SEARCH_API_KEY` | Required when `SIL_SEARCH_PROVIDER=brave`. Register at https://brave.com/search/api/. |
+| `BRAVE_COUNTRY`, `BRAVE_SEARCH_LANG` | Default to `AU` / `en` - bias results to Australia regardless of query text. |
+| `SERPAPI_API_KEY`, `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_CX` | Alternative providers, still supported, not currently active. |
+| `SIL_DAILY_QUERY_BUDGET` | Caps queries per `discover` run - check whichever provider's plan you're on for its actual limit (they vary: e.g. SerpApi's free tier is 100/**month**, Google CSE's is 100/day). |
 | `ABN_LOOKUP_GUID` | Required for `abn-verify`. Register for free at https://abr.business.gov.au/Tools/WebServices. |
 | `SIL_CRAWLER_USER_AGENT`, `SIL_CRAWL_DELAY_SECONDS`, `SIL_CRAWL_MAX_PAGES_PER_DOMAIN`, `SIL_CRAWL_CONCURRENCY` | Crawl politeness/scale controls. |
 
@@ -179,25 +179,28 @@ importer/matcher/dashboard-data tests use an in-memory SQLite database - nothing
 or a real file. The dashboard's rendering (`dashboard/app.py`) isn't unit-tested (Streamlit UI code
 generally isn't) but was verified with a headless Playwright smoke test against real crawled data.
 
-## Search provider: SerpApi
+## Search provider: Brave Search API
 
-`SerpApiProvider` (`discovery/search_provider.py`) is the recommended live discovery source - it
-proxies Google Search results without needing a Programmable Search Engine. It's fixed to an
-Australian-biased search (`google_domain=google.com.au`, `gl=au`, `hl=en`, `location=Australia`)
-regardless of query text, since those parameters - not the location word in the query string -
-are what actually bias Google's index/ranking to a country. State/city targeting (NSW/VIC/QLD
-prioritised by default) still comes from the query generator's location list, same as before -
-see `config/locations.yml`.
+`BraveSearchProvider` (`discovery/search_provider.py`) is the active live discovery source. It
+authenticates via the `X-Subscription-Token` header (never as a query param, so the key never
+lands in logs or URLs) and defaults to `country="AU"` to bias results to Australia, regardless of
+query text. State/city targeting (NSW/VIC/QLD prioritised by default) still comes from the query
+generator's location list, same as before - see `config/locations.yml`.
 
 ```bash
-SIL_SEARCH_PROVIDER=serpapi
-SERPAPI_API_KEY=<your key>
+SIL_SEARCH_PROVIDER=brave
+BRAVE_SEARCH_API_KEY=<your key>
 ```
 
-`GoogleCSEProvider` remains in the codebase and fully supported (`SIL_SEARCH_PROVIDER=google_cse`)
-for anyone who already has a Programmable Search Engine set up - SerpApi is just the new default
-recommendation, not a hard replacement, since the whole point of the `SearchProvider` interface is
-to keep the discovery source swappable.
+Note: Brave's API paginates by *page* via an `offset` parameter (0-9), not by raw result index -
+`BraveSearchProvider` derives `offset` as `start // count`, which only lines up cleanly if every
+call for a given query uses the same `limit` (true of everything in this codebase today, since
+`discover` doesn't paginate within a single run yet).
+
+`SerpApiProvider` and `GoogleCSEProvider` both remain in the codebase and fully supported
+(`SIL_SEARCH_PROVIDER=serpapi` / `google_cse`) - Brave is just the currently-active choice, not a
+hard deletion, since the whole point of the `SearchProvider` interface is to keep the discovery
+source swappable.
 
 ## Adding another search provider
 
@@ -209,12 +212,14 @@ the `SearchProvider` interface.
 
 ## Known limitations
 
-- `SerpApiProvider`'s response parsing (`organic_results` with `link`/`title`/`snippet`) matches
-  SerpApi's documented Google Search API response shape, but has only been verified against
-  synthetic/mocked responses (`respx`) from this environment - this environment's egress proxy
-  blocks `serpapi.com` outright (same policy-based block as every other arbitrary external domain,
-  confirmed via the proxy's own status endpoint), and no `SERPAPI_API_KEY` was available to test
-  with. Verify the first few real results by hand before trusting it unattended.
+- `BraveSearchProvider`'s response parsing (`web.results` with `title`/`url`/`description`, falling
+  back to a top-level `results` key) matches Brave's documented response shape, but has only been
+  verified against synthetic/mocked responses (`respx`) - this environment's egress proxy blocks
+  `api.search.brave.com` outright (same policy-based block as every other arbitrary external
+  domain, confirmed via the proxy's own status endpoint), and no `BRAVE_SEARCH_API_KEY` was
+  available to test with from here. Verify the first few real results by hand before trusting it
+  unattended. `SerpApiProvider` carries the same caveat (untested against a live response, same
+  reason).
 - Job-board discovery (Seek/Indeed/EthicalJobs) has the extraction *logic* (pull an employer name
   and website out of ad text) but no live scraper wired up yet: each board's terms of service need
   confirming before automated fetching runs against it.

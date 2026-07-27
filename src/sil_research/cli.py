@@ -44,7 +44,12 @@ from sil_research.discovery.base import SearchProvider, SearchProviderError, Sea
 from sil_research.discovery.domain_filter import canonical_domain, classify_domain
 from sil_research.discovery.job_board import extract_employer_from_job_ad
 from sil_research.discovery.query_generator import QueryGenerator
-from sil_research.discovery.search_provider import GoogleCSEProvider, MockSearchProvider, SerpApiProvider
+from sil_research.discovery.search_provider import (
+    BraveSearchProvider,
+    GoogleCSEProvider,
+    MockSearchProvider,
+    SerpApiProvider,
+)
 from sil_research.export.csv_export import export_evidence_csv, export_providers_csv
 from sil_research.export.json_export import export_providers_json
 from sil_research.extraction.abn import find_abns
@@ -63,6 +68,15 @@ app = typer.Typer(help="Compliant SIL provider lead-research CLI", add_completio
 
 
 def _build_search_provider(settings) -> SearchProvider:
+    if settings.sil_search_provider == "brave":
+        if not settings.brave_search_api_key:
+            typer.echo("SIL_SEARCH_PROVIDER=brave but BRAVE_SEARCH_API_KEY is not set.")
+            raise typer.Exit(1)
+        return BraveSearchProvider(
+            api_key=settings.brave_search_api_key,
+            country=settings.brave_country,
+            search_lang=settings.brave_search_lang,
+        )
     if settings.sil_search_provider == "serpapi":
         if not settings.serpapi_api_key:
             typer.echo("SIL_SEARCH_PROVIDER=serpapi but SERPAPI_API_KEY is not set.")

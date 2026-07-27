@@ -5,7 +5,12 @@ import pytest
 import respx
 
 from sil_research.discovery.base import SearchProviderError, SearchQuotaExceededError
-from sil_research.discovery.search_provider import GoogleCSEProvider, MockSearchProvider, SerpApiProvider
+from sil_research.discovery.search_provider import (
+    BraveSearchProvider,
+    GoogleCSEProvider,
+    MockSearchProvider,
+    SerpApiProvider,
+)
 
 
 def test_mock_search_provider_returns_canned_results_and_records_calls():
@@ -124,3 +129,90 @@ def test_serpapi_provider_pagination_uses_start_offset():
     params = dict(httpx.QueryParams(request.url.query))
     assert params["start"] == "20"
     assert params["num"] == "10"
+
+
+def test_brave_search_provider_requires_api_key():
+    with pytest.raises(ValueError):
+        BraveSearchProvider(api_key="")
+
+
+@respx.mock
+def test_brave_search_provider_parses_web_results_and_sends_token_header():
+    route = respx.get("https://api.search.brave.com/res/v1/web/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "web": {
+                    "results": [
+                        {"title": "Sunrise Living", "url": "https://sunriseliving.com.au/", "description": "SIL provider in NSW"},
+                        {"title": "Beacon Care", "url": "https://beaconcare.com.au/", "description": "Supported independent living"},
+                    ]
+                }
+            },
+        )
+    )
+    provider = BraveSearchProvider(api_key="test-token")
+    results = provider.search('"supported independent living" NDIS New South Wales', limit=10)
+
+    assert len(results) == 2
+    assert results[0].url == "https://sunriseliving.com.au/"
+    assert results[0].snippet == "SIL provider in NSW"
+    assert results[1].title == "Beacon Care"
+
+    request = route.calls.last.request
+    assert request.headers["X-Subscription-Token"] == "test-token"
+    assert "test-token" not in str(request.url), "the API key must never be sent as a query param"
+    params = dict(httpx.QueryParams(request.url.query))
+    assert params["country"] == "AU"
+    assert params["search_lang"] == "en"
+    assert params["count"] == "10"
+
+
+@respx.mock
+def test_brave_search_provider_falls_back_to_top_level_results_key():
+    respx.get("https://api.search.brave.com/res/v1/web/search").mock(
+        return_value=httpx.Response(200, json={"results": [{"title": "A", "url": "https://a.com.au/", "description": "d"}]})
+    )
+    provider = BraveSearchProvider(api_key="test-token")
+    results = provider.search("sil nsw")
+    assert len(results) == 1
+    assert results[0].url == "https://a.com.au/"
+
+
+@respx.mock
+def test_brave_search_provider_raises_quota_exceeded_on_429():
+    respx.get("https://api.search.brave.com/res/v1/web/search").mock(return_value=httpx.Response(429))
+    provider = BraveSearchProvider(api_key="test-token")
+    with pytest.raises(SearchQuotaExceededError):
+        provider.search("sil nsw")
+
+
+@respx.mock
+def test_brave_search_provider_raises_on_auth_error():
+    respx.get("https://api.search.brave.com/res/v1/web/search").mock(return_value=httpx.Response(401, text="Invalid subscription token"))
+    provider = BraveSearchProvider(api_key="bad-token")
+    with pytest.raises(SearchProviderError):
+        provider.search("sil nsw")
+
+
+@respx.mock
+def test_brave_search_provider_pagination_derives_offset_from_start_and_count():
+    route = respx.get("https://api.search.brave.com/res/v1/web/search").mock(return_value=httpx.Response(200, json={"web": {"results": []}}))
+    provider = BraveSearchProvider(api_key="test-token")
+    provider.search("sil nsw", start=20, limit=10)
+
+    request = route.calls.last.request
+    params = dict(httpx.QueryParams(request.url.query))
+    assert params["offset"] == "2"
+    assert params["count"] == "10"
+
+
+@respx.mock
+def test_brave_search_provider_caps_count_at_twenty():
+    route = respx.get("https://api.search.brave.com/res/v1/web/search").mock(return_value=httpx.Response(200, json={"web": {"results": []}}))
+    provider = BraveSearchProvider(api_key="test-token")
+    provider.search("sil nsw", limit=50)
+
+    request = route.calls.last.request
+    params = dict(httpx.QueryParams(request.url.query))
+    assert params["count"] == "20"

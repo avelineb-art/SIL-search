@@ -204,3 +204,84 @@ class SerpApiProvider(SearchProvider):
                 )
             )
         return results
+
+
+class BraveSearchProvider(SearchProvider):
+    """Brave Search API (https://brave.com/search/api/).
+
+    Authenticates via the `X-Subscription-Token` header (never as a query
+    param, so it never ends up in logs/URLs). Defaults to `country="AU"` to
+    bias results to Australia - state/city targeting itself still comes
+    from the query generator's location list (NSW/VIC/QLD first by
+    default; see config/locations.yml).
+
+    Note: Brave's API paginates by *page* via `offset` (0-9), not by raw
+    result index like Google/SerpApi - `offset` here is derived as
+    `start // count`, which only lines up cleanly if callers always request
+    the same `limit` for a given query (true of every call in this
+    codebase today, since nothing paginates within a single `discover` run
+    yet).
+    """
+
+    ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+
+    def __init__(self, api_key: str, country: str = "AU", search_lang: str = "en", client: httpx.Client | None = None) -> None:
+        if not api_key:
+            raise ValueError("BraveSearchProvider requires an api_key - register at https://brave.com/search/api/")
+        self._api_key = api_key
+        self._country = country
+        self._search_lang = search_lang
+        self._client = client or httpx.Client(timeout=15.0)
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(httpx.TransportError),
+    )
+    def _get(self, params: dict) -> httpx.Response:
+        return self._client.get(
+            self.ENDPOINT,
+            params=params,
+            headers={"Accept": "application/json", "X-Subscription-Token": self._api_key},
+        )
+
+    def search(self, query: str, start: int = 0, limit: int = 10) -> list[SearchResult]:
+        count = max(1, min(limit, 20))
+        offset = start // count
+
+        params = {
+            "q": query,
+            "country": self._country,
+            "search_lang": self._search_lang,
+            "count": count,
+            "offset": offset,
+        }
+        try:
+            response = self._get(params)
+        except httpx.TransportError as exc:
+            raise SearchProviderError(f"Network error calling Brave Search API: {exc}") from exc
+
+        if response.status_code == 429:
+            raise SearchQuotaExceededError("Brave Search API returned HTTP 429 (rate limited)")
+        if response.status_code in (401, 403):
+            raise SearchProviderError(
+                f"Brave Search API auth error (HTTP {response.status_code}): {response.text[:500]}"
+            )
+        if response.status_code != 200:
+            raise SearchProviderError(f"Brave Search API returned HTTP {response.status_code}: {response.text[:500]}")
+
+        payload = response.json()
+        items = (payload.get("web") or {}).get("results") or payload.get("results") or []
+        results = []
+        for idx, item in enumerate(items):
+            results.append(
+                SearchResult(
+                    url=item.get("url", ""),
+                    title=item.get("title", ""),
+                    snippet=item.get("description", ""),
+                    rank=start + idx,
+                    query=query,
+                )
+            )
+        return results

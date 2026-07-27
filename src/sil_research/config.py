@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     serpapi_google_domain: str = "google.com.au"
     serpapi_country: str = "au"
     serpapi_language: str = "en"
+    brave_search_api_key: str | None = None
+    brave_country: str = "AU"
+    brave_search_lang: str = "en"
     sil_daily_query_budget: int = 100
     sil_query_freshness_days: int = 30
 
