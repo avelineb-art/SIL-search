@@ -44,7 +44,7 @@ from sil_research.discovery.base import SearchProvider, SearchProviderError, Sea
 from sil_research.discovery.domain_filter import canonical_domain, classify_domain
 from sil_research.discovery.job_board import extract_employer_from_job_ad
 from sil_research.discovery.query_generator import QueryGenerator
-from sil_research.discovery.search_provider import GoogleCSEProvider, MockSearchProvider
+from sil_research.discovery.search_provider import GoogleCSEProvider, MockSearchProvider, SerpApiProvider
 from sil_research.export.csv_export import export_evidence_csv, export_providers_csv
 from sil_research.export.json_export import export_providers_json
 from sil_research.extraction.abn import find_abns
@@ -63,6 +63,16 @@ app = typer.Typer(help="Compliant SIL provider lead-research CLI", add_completio
 
 
 def _build_search_provider(settings) -> SearchProvider:
+    if settings.sil_search_provider == "serpapi":
+        if not settings.serpapi_api_key:
+            typer.echo("SIL_SEARCH_PROVIDER=serpapi but SERPAPI_API_KEY is not set.")
+            raise typer.Exit(1)
+        return SerpApiProvider(
+            api_key=settings.serpapi_api_key,
+            google_domain=settings.serpapi_google_domain,
+            country=settings.serpapi_country,
+            language=settings.serpapi_language,
+        )
     if settings.sil_search_provider == "google_cse":
         if not settings.google_cse_api_key or not settings.google_cse_cx:
             typer.echo("SIL_SEARCH_PROVIDER=google_cse but GOOGLE_CSE_API_KEY / GOOGLE_CSE_CX are not set.")

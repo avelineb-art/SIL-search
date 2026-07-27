@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     sil_search_provider: str = "mock"
     google_cse_api_key: str | None = None
     google_cse_cx: str | None = None
+    serpapi_api_key: str | None = None
+    serpapi_google_domain: str = "google.com.au"
+    serpapi_country: str = "au"
+    serpapi_language: str = "en"
     sil_daily_query_budget: int = 100
     sil_query_freshness_days: int = 30
 

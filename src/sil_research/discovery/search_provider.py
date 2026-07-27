@@ -106,3 +106,101 @@ class GoogleCSEProvider(SearchProvider):
                 )
             )
         return results
+
+
+class SerpApiProvider(SearchProvider):
+    """SerpApi (https://serpapi.com) - proxies Google Search results without
+    requiring a Programmable Search Engine.
+
+    Fixed to an Australian-biased Google search (google_domain=google.com.au,
+    gl=au country targeting) regardless of query text, since query text alone
+    (the location token appended by the query generator) doesn't influence
+    which country's Google index/ranking is used - `gl`/`google_domain` do.
+    State/city targeting itself still comes from the query generator's
+    location-priority list (NSW/VIC/QLD first by default;
+    see config/locations.yml) appending a location token to each query.
+
+    Note: SerpApi's free tier is 100 searches **per month**, not per day
+    like Google CSE's free tier - set SIL_DAILY_QUERY_BUDGET accordingly if
+    you're on the free plan.
+    """
+
+    ENDPOINT = "https://serpapi.com/search"
+
+    def __init__(
+        self,
+        api_key: str,
+        google_domain: str = "google.com.au",
+        country: str = "au",
+        language: str = "en",
+        location: str | None = "Australia",
+        client: httpx.Client | None = None,
+    ) -> None:
+        if not api_key:
+            raise ValueError("SerpApiProvider requires an api_key - register at https://serpapi.com")
+        self._api_key = api_key
+        self._google_domain = google_domain
+        self._country = country
+        self._language = language
+        self._location = location
+        self._client = client or httpx.Client(timeout=15.0)
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(httpx.TransportError),
+    )
+    def _get(self, params: dict) -> httpx.Response:
+        return self._client.get(self.ENDPOINT, params=params)
+
+    def search(self, query: str, start: int = 0, limit: int = 10) -> list[SearchResult]:
+        params = {
+            "engine": "google",
+            "api_key": self._api_key,
+            "q": query,
+            "google_domain": self._google_domain,
+            "gl": self._country,
+            "hl": self._language,
+            "start": start,
+            "num": min(limit, 100),
+        }
+        if self._location:
+            params["location"] = self._location
+
+        try:
+            response = self._get(params)
+        except httpx.TransportError as exc:
+            raise SearchProviderError(f"Network error calling SerpApi: {exc}") from exc
+
+        if response.status_code == 429:
+            raise SearchQuotaExceededError("SerpApi returned HTTP 429 (rate limited)")
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+
+        error_message = str(payload.get("error", "")) if isinstance(payload, dict) else ""
+        if error_message:
+            lowered = error_message.lower()
+            if any(keyword in lowered for keyword in ("run out", "quota", "exceeded", "plan limit")):
+                raise SearchQuotaExceededError(f"SerpApi quota exceeded: {error_message}")
+            raise SearchProviderError(f"SerpApi returned an error: {error_message}")
+
+        if response.status_code != 200:
+            raise SearchProviderError(f"SerpApi returned HTTP {response.status_code}: {response.text[:500]}")
+
+        organic_results = payload.get("organic_results", [])
+        results = []
+        for idx, item in enumerate(organic_results):
+            results.append(
+                SearchResult(
+                    url=item.get("link", ""),
+                    title=item.get("title", ""),
+                    snippet=item.get("snippet", ""),
+                    rank=start + idx,
+                    query=query,
+                )
+            )
+        return results
