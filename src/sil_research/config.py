@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     brave_search_lang: str = "en"
     sil_daily_query_budget: int = 100
     sil_query_freshness_days: int = 30
+    sil_discovery_delay_seconds: float = 1.5
 
     abn_lookup_guid: str | None = None
 

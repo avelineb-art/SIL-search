@@ -10,6 +10,7 @@ or a database.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -209,6 +210,119 @@ def _update_identity_fields(provider_row: Provider, outcome: CrawlOutcome) -> No
         provider_row.normalised_trading_name = normalise_name(homepage.parsed.title)
 
 
+def _run_discovery(session, batch, provider: SearchProvider, delay_seconds: float, sleep_fn=time.sleep) -> int:
+    """Executes a batch of discovery queries against `provider`, one at a
+    time with `delay_seconds` between requests.
+
+    The delay matters: firing every query back-to-back with no pacing (as
+    an earlier version of this function did) can trip a search API's burst
+    rate limit, and the *first* location/phrase combinations in the batch -
+    typically a state capital or the state name itself, i.e. exactly the
+    highest-value queries - are the ones that pay for it, silently coming
+    back empty or erroring while later, less important queries succeed
+    once the rate limit window resets. A fixed inter-query delay avoids
+    that failure mode entirely rather than trying to detect it after the
+    fact.
+    """
+    providers_created = 0
+    for index, candidate in enumerate(batch):
+        if index > 0:
+            sleep_fn(delay_seconds)
+
+        query_row = SearchQuery(
+            query_text=candidate.query_text,
+            phrase=candidate.phrase,
+            location=candidate.location,
+            run_at=datetime.utcnow(),
+        )
+        session.add(query_row)
+        session.flush()
+
+        try:
+            results = provider.search(candidate.query_text, limit=10)
+        except SearchQuotaExceededError as exc:
+            session.add(ErrorRecord(stage="discovery", error_type="SearchQuotaExceededError", message=str(exc)))
+            typer.echo(f"Stopping: {exc}")
+            break
+        except SearchProviderError as exc:
+            session.add(ErrorRecord(stage="discovery", error_type="SearchProviderError", message=str(exc)))
+            continue
+
+        query_row.result_count = len(results)
+
+        for result in results:
+            if session.execute(select(SearchResult.result_id).where(SearchResult.url == result.url)).scalar_one_or_none():
+                continue
+
+            decision = classify_domain(result.url)
+            target_url, target_domain, discovery_source = result.url, decision.domain, "search_api"
+
+            if decision.is_job_board or decision.is_generic_directory:
+                employer = extract_employer_from_job_ad(result.snippet or "")
+                if employer.employer_website:
+                    target_url = employer.employer_website
+                    target_domain = canonical_domain(target_url)
+                    discovery_source = "job_board" if decision.is_job_board else "directory"
+                else:
+                    session.add(
+                        SearchResult(
+                            query_id=query_row.query_id,
+                            url=result.url,
+                            title=result.title,
+                            snippet=result.snippet,
+                            rank=result.rank,
+                            canonical_domain=decision.domain,
+                            excluded=True,
+                            exclusion_reason="listing domain with no extractable employer website",
+                        )
+                    )
+                    continue
+            elif decision.excluded:
+                session.add(
+                    SearchResult(
+                        query_id=query_row.query_id,
+                        url=result.url,
+                        title=result.title,
+                        snippet=result.snippet,
+                        rank=result.rank,
+                        canonical_domain=decision.domain,
+                        excluded=True,
+                        exclusion_reason=decision.reason,
+                    )
+                )
+                continue
+
+            session.add(
+                SearchResult(
+                    query_id=query_row.query_id,
+                    url=result.url,
+                    title=result.title,
+                    snippet=result.snippet,
+                    rank=result.rank,
+                    canonical_domain=target_domain,
+                    excluded=False,
+                )
+            )
+
+            if not session.execute(select(Domain).where(Domain.canonical_domain == target_domain)).scalar_one_or_none():
+                session.add(Domain(canonical_domain=target_domain))
+
+            if session.get(Provider, target_domain) is None:
+                session.add(
+                    Provider(
+                        provider_id=target_domain,
+                        domain=target_domain,
+                        website_url=target_url,
+                        discovery_query=candidate.query_text,
+                        discovery_source=discovery_source,
+                        crawl_status="PENDING",
+                    )
+                )
+                providers_created += 1
+
+    return providers_created
+
+
 @app.command()
 def discover(
     state: str = typer.Option(None, "--state", help="Restrict to one state/territory (e.g. QLD, NSW)."),
@@ -229,98 +343,7 @@ def discover(
         batch = generator.next_batch(already_run=already_run, budget=limit, state_filter=state)
         typer.echo(f"Running {len(batch)} quer{'y' if len(batch) == 1 else 'ies'}...")
 
-        providers_created = 0
-        for candidate in batch:
-            query_row = SearchQuery(
-                query_text=candidate.query_text,
-                phrase=candidate.phrase,
-                location=candidate.location,
-                run_at=datetime.utcnow(),
-            )
-            session.add(query_row)
-            session.flush()
-
-            try:
-                results = provider.search(candidate.query_text, limit=10)
-            except SearchQuotaExceededError as exc:
-                session.add(ErrorRecord(stage="discovery", error_type="SearchQuotaExceededError", message=str(exc)))
-                typer.echo(f"Stopping: {exc}")
-                break
-            except SearchProviderError as exc:
-                session.add(ErrorRecord(stage="discovery", error_type="SearchProviderError", message=str(exc)))
-                continue
-
-            query_row.result_count = len(results)
-
-            for result in results:
-                if session.execute(select(SearchResult.result_id).where(SearchResult.url == result.url)).scalar_one_or_none():
-                    continue
-
-                decision = classify_domain(result.url)
-                target_url, target_domain, discovery_source = result.url, decision.domain, "search_api"
-
-                if decision.is_job_board or decision.is_generic_directory:
-                    employer = extract_employer_from_job_ad(result.snippet or "")
-                    if employer.employer_website:
-                        target_url = employer.employer_website
-                        target_domain = canonical_domain(target_url)
-                        discovery_source = "job_board" if decision.is_job_board else "directory"
-                    else:
-                        session.add(
-                            SearchResult(
-                                query_id=query_row.query_id,
-                                url=result.url,
-                                title=result.title,
-                                snippet=result.snippet,
-                                rank=result.rank,
-                                canonical_domain=decision.domain,
-                                excluded=True,
-                                exclusion_reason="listing domain with no extractable employer website",
-                            )
-                        )
-                        continue
-                elif decision.excluded:
-                    session.add(
-                        SearchResult(
-                            query_id=query_row.query_id,
-                            url=result.url,
-                            title=result.title,
-                            snippet=result.snippet,
-                            rank=result.rank,
-                            canonical_domain=decision.domain,
-                            excluded=True,
-                            exclusion_reason=decision.reason,
-                        )
-                    )
-                    continue
-
-                session.add(
-                    SearchResult(
-                        query_id=query_row.query_id,
-                        url=result.url,
-                        title=result.title,
-                        snippet=result.snippet,
-                        rank=result.rank,
-                        canonical_domain=target_domain,
-                        excluded=False,
-                    )
-                )
-
-                if not session.execute(select(Domain).where(Domain.canonical_domain == target_domain)).scalar_one_or_none():
-                    session.add(Domain(canonical_domain=target_domain))
-
-                if session.get(Provider, target_domain) is None:
-                    session.add(
-                        Provider(
-                            provider_id=target_domain,
-                            domain=target_domain,
-                            website_url=target_url,
-                            discovery_query=candidate.query_text,
-                            discovery_source=discovery_source,
-                            crawl_status="PENDING",
-                        )
-                    )
-                    providers_created += 1
+        providers_created = _run_discovery(session, batch, provider, settings.sil_discovery_delay_seconds)
 
         typer.echo(f"Discovered {providers_created} new candidate provider domain(s).")
 

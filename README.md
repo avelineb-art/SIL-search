@@ -95,6 +95,7 @@ See `.env.example` for the full list with defaults. The ones you're most likely 
 | `BRAVE_COUNTRY`, `BRAVE_SEARCH_LANG` | Default to `AU` / `en` - bias results to Australia regardless of query text. |
 | `SERPAPI_API_KEY`, `GOOGLE_CSE_API_KEY`/`GOOGLE_CSE_CX` | Alternative providers, still supported, not currently active. |
 | `SIL_DAILY_QUERY_BUDGET` | Caps queries per `discover` run - check whichever provider's plan you're on for its actual limit (they vary: e.g. SerpApi's free tier is 100/**month**, Google CSE's is 100/day). |
+| `SIL_DISCOVERY_DELAY_SECONDS` | Delay between consecutive queries within a `discover` run (default `1.5`). Without pacing, the first/highest-priority queries in a batch can trip the provider's burst rate limit and silently come back empty or erroring - see "Known limitations". |
 | `ABN_LOOKUP_GUID` | Required for `abn-verify`. Register for free at https://abr.business.gov.au/Tools/WebServices. |
 | `SIL_CRAWLER_USER_AGENT`, `SIL_CRAWL_DELAY_SECONDS`, `SIL_CRAWL_MAX_PAGES_PER_DOMAIN`, `SIL_CRAWL_CONCURRENCY` | Crawl politeness/scale controls. |
 
@@ -245,6 +246,15 @@ the `SearchProvider` interface.
   Acceptable for an internal single-reviewer tool; revisit if Stage 5 adds scheduling.
 - SQLite doesn't reliably support two processes (e.g. the dashboard and a CLI command) writing at
   the same moment in every environment - see "Running the dashboard" above.
+- **Fixed**: `discover` used to fire every query in a batch back-to-back with no delay. On a real
+  Brave Search run this silently degraded the highest-priority queries at the start of a batch
+  (state name, capital city, first regional centre) - they'd hit Brave's burst rate limit and come
+  back as an empty result or a caught `SearchProviderError` before any later, lower-priority query
+  did, since query order follows the state → metro → regional-centre priority in
+  `config/locations.yml`. `discover` now paces queries `SIL_DISCOVERY_DELAY_SECONDS` apart (default
+  `1.5`s). If you hit this before the fix landed, clear the affected rows from `search_queries` so
+  the freshness-window dedup doesn't skip them on the next run, e.g.:
+  `DELETE FROM search_queries WHERE location IN ('New South Wales', 'Sydney', 'Newcastle');`
 
 ## Sample output record (CSV)
 
