@@ -14,7 +14,7 @@ from dataclasses import dataclass
 _ABN_WEIGHTS = [10, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19]
 
 _ABN_CONTEXT_PATTERN = re.compile(
-    r"(?:australian business number|abn)\s*[:#]?\s*((?:\d[\s]?){11})",
+    r"(?:australian business number|a\.?\s*b\.?\s*n\.?)\s*[:#]?\s*((?:\d[\s-]?){11})",
     re.IGNORECASE,
 )
 _ACN_CONTEXT_PATTERN = re.compile(
@@ -54,7 +54,7 @@ def find_abns(text: str) -> list[AbnMatch]:
     matches: list[AbnMatch] = []
     seen: set[str] = set()
     for match in _ABN_CONTEXT_PATTERN.finditer(text):
-        digits = re.sub(r"\s", "", match.group(1))
+        digits = re.sub(r"[\s-]", "", match.group(1))
         if len(digits) != 11 or digits in seen:
             continue
         seen.add(digits)

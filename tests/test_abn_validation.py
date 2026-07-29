@@ -50,5 +50,19 @@ def test_find_abns_flags_invalid_checksum_but_still_returns_it():
     assert matches[0].valid_checksum is False
 
 
+def test_find_abns_with_dotted_prefix():
+    text = "Company details - A.B.N. 51 824 753 556"
+    matches = find_abns(text)
+    assert len(matches) == 1
+    assert matches[0].digits == "51824753556"
+
+
+def test_find_abns_with_hyphenated_digit_groups():
+    text = "ABN: 51-824-753-556"
+    matches = find_abns(text)
+    assert len(matches) == 1
+    assert matches[0].digits == "51824753556"
+
+
 def test_format_abn():
     assert format_abn("51824753556") == "51 824 753 556"
