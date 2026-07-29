@@ -52,7 +52,9 @@ class Provider(Base):
     legal_name: Mapped[str | None] = mapped_column(String(255))
     normalised_trading_name: Mapped[str | None] = mapped_column(String(255))
     normalised_legal_name: Mapped[str | None] = mapped_column(String(255))
-    abn: Mapped[str | None] = mapped_column(String(11), unique=True)
+    # Not unique: multiple provider website records (franchise locations,
+    # duplicate discoveries, rebrands) can legitimately share one ABN.
+    abn: Mapped[str | None] = mapped_column(String(11), index=True)
     abn_valid: Mapped[bool | None] = mapped_column(Boolean)
     abn_lookup_confirmed: Mapped[bool | None] = mapped_column(Boolean)
     acn: Mapped[str | None] = mapped_column(String(9))

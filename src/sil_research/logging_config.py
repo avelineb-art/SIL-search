@@ -26,3 +26,8 @@ def configure_logging(level: str = "INFO") -> None:
     )
     root.addHandler(handler)
     root.setLevel(level)
+
+    # httpx logs full request URLs (including API keys in query params) at
+    # INFO level - keep it at WARNING so credentials never hit the console/log.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
